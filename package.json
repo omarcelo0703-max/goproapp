@@ -1,0 +1,10 @@
+{
+  "name": "gopro-soccer-club-admin",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Panel de administración de GoPro Soccer Club (Netlify Identity + Functions + Blobs)",
+  "dependencies": {
+    "@netlify/blobs": "latest",
+    "@netlify/identity": "^1.2.0"
+  }
+}
