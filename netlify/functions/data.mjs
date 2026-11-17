@@ -1,6 +1,8 @@
 // Los datos del club (alumnos, pagos, asistencia...). Solo para usuarios con sesión.
 import { getStore } from '@netlify/blobs';
-import { currentUser, json, fail, checkOrigin, readJson, deepMerge, sanitizeState } from '../lib/shared.mjs';
+import {
+  currentUser, json, fail, checkOrigin, readJson, deepMerge, sanitizeState, sanitizePatch, applyListOps,
+} from '../lib/shared.mjs';
 
 const STORE = 'gopro-club';
 const KEY = 'state';
@@ -12,7 +14,8 @@ async function applyPatch(s, patch) {
   for (let intento = 0; intento < 6; intento++) {
     const cur = await s.getWithMetadata(KEY, { type: 'json' });
     const base = cur && cur.data ? cur.data : {};
-    const next = deepMerge(structuredClone(base), patch);
+    const { listOps, ...rest } = patch;
+    const next = deepMerge(applyListOps(structuredClone(base), listOps), rest);
     const res = cur
       ? await s.setJSON(KEY, next, { onlyIfMatch: cur.etag })
       : await s.setJSON(KEY, next, { onlyIfNew: true });
@@ -52,7 +55,7 @@ export default async (req) => {
       }
 
       if (body && body.patch !== undefined) {
-        const patch = sanitizeState(body.patch);
+        const patch = sanitizePatch(body.patch);
         const version = await applyPatch(s, patch);
         return json({ ok: true, version });
       }

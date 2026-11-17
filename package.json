@@ -4,7 +4,7 @@
   "private": true,
   "description": "Panel de administración de GoPro Soccer Club (Netlify Identity + Functions + Blobs)",
   "dependencies": {
-    "@netlify/blobs": "latest",
+    "@netlify/blobs": "^11.1.9",
     "@netlify/identity": "^1.2.0"
   }
 }
