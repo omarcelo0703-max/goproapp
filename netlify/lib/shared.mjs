@@ -118,3 +118,63 @@ export function sanitizeState(obj, { requireStudents = false } = {}) {
   if (requireStudents && !Array.isArray(out.students)) throw bad('Falta la lista de alumnos');
   return out;
 }
+
+/* ---------- Cambios parciales (patch) ---------- */
+// Las listas de alumnos y encargados NO se envían enteras: se mandan operaciones sueltas
+// (agregar / editar / quitar un elemento). Así, si dos personas guardan a la vez, el servidor
+// aplica las dos sobre la versión más nueva y nadie pisa el trabajo del otro.
+export const LIST_KEYS = ['students', 'encargados'];
+const LIST_OPS = new Set(['add', 'update', 'remove']);
+const MAX_OPS = 5000;
+
+export function sanitizePatch(obj) {
+  if (!isPlain(obj)) throw bad('Datos inválidos');
+  const { listOps, ...rest } = obj;
+  for (const k of LIST_KEYS) {
+    if (k in rest) {
+      // Una pestaña abierta con la versión anterior de la app intenta enviar la lista completa.
+      throw bad('La app se actualizó. Recarga la página para seguir guardando.');
+    }
+  }
+  const out = Object.keys(rest).length ? sanitizeState(rest) : {};
+  if (listOps !== undefined) {
+    if (!isPlain(listOps)) throw bad('Operaciones inválidas');
+    const ops = {};
+    for (const k of Object.keys(listOps)) {
+      if (!LIST_KEYS.includes(k)) throw bad('Lista no permitida: ' + k);
+      const arr = listOps[k];
+      if (!Array.isArray(arr) || arr.length > MAX_OPS) throw bad('Operaciones inválidas: ' + k);
+      ops[k] = arr.map((o) => {
+        if (!isPlain(o) || !LIST_OPS.has(o.op)) throw bad('Operación inválida');
+        if (o.op === 'remove') {
+          if (!Number.isInteger(o.id)) throw bad('Operación inválida');
+          return { op: 'remove', id: o.id };
+        }
+        if (!isPlain(o.item) || !Number.isInteger(o.item.id)) throw bad('Operación inválida');
+        return { op: o.op, item: cloneSafe(o.item) };
+      });
+    }
+    out.listOps = ops;
+  }
+  return out;
+}
+
+// Aplica las operaciones de lista sobre el estado (lo modifica en el lugar).
+// - add: agrega el elemento; si ya existe uno con ese id, lo reemplaza.
+// - update: reemplaza el elemento con ese id; si otra persona ya lo borró, se ignora
+//   (así una edición vieja no "revive" a un alumno eliminado).
+// - remove: lo quita de la lista.
+export function applyListOps(state, listOps) {
+  for (const k of Object.keys(listOps || {})) {
+    const list = Array.isArray(state[k]) ? state[k] : [];
+    for (const o of listOps[k]) {
+      const id = o.op === 'remove' ? o.id : o.item.id;
+      const idx = list.findIndex((x) => x && x.id === id);
+      if (o.op === 'remove') { if (idx >= 0) list.splice(idx, 1); }
+      else if (idx >= 0) list[idx] = o.item;
+      else if (o.op === 'add') list.push(o.item);
+    }
+    state[k] = list;
+  }
+  return state;
+}

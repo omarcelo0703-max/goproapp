@@ -773,10 +773,39 @@ async function api(path, {method='GET', body, noExpire=false} = {}){
   return data;
 }
 
-// patch: p. ej. {pagos: {"2|2026-09": {...}}} o {students, nextId} — solo lo que cambió.
+// patch: p. ej. {pagos: {"2|2026-09": {...}}} — solo lo que cambió.
+// Alumnos y encargados se guardan como operaciones sueltas (ver listOp), nunca la lista entera.
 // El servidor lo fusiona con lo último guardado, así dos personas no se pisan.
+function mergePatchInto(target, source){
+  const {listOps, ...rest} = source;
+  deepMergeInto(target, rest);
+  if(listOps){
+    target.listOps = target.listOps || {};
+    for(const k in listOps){
+      target.listOps[k] = (target.listOps[k] || []).concat(listOps[k]);
+    }
+  }
+  return target;
+}
+// Operaciones sobre una lista: op = 'add' | 'update' (con el elemento) o 'remove' (con el id)
+function listOp(list, op, itemOrId){
+  const o = op === 'remove' ? {op, id: itemOrId} : {op, item: itemOrId};
+  return {listOps: {[list]: [o]}};
+}
+function listOps(list, op, items){
+  return {listOps: {[list]: items.map(it=>({op, item: it}))}};
+}
+// Id nuevo al azar (no secuencial): dos personas creando a la vez no pueden obtener el mismo
+function newId(list){
+  const used = new Set(list.map(x=>x.id));
+  let id;
+  do { id = 100000 + Math.floor(Math.random() * 2000000000); } while(used.has(id));
+  return id;
+}
+
 function queueSave(patch){
-  deepMergeInto(pendingPatch, patch);
+  // se copia: así lo que queda en cola no cambia si el objeto se sigue editando en pantalla
+  mergePatchInto(pendingPatch, JSON.parse(JSON.stringify(patch)));
   clearTimeout(saveTimer);
   saveTimer = setTimeout(flushSave, 150);
 }
@@ -798,9 +827,7 @@ async function flushSave(){
       showToast('No se pudo guardar: ' + err.message); // el servidor lo rechazó: no tiene sentido reintentar
     } else {
       // sin conexión o error temporal: conservamos el cambio y reintentamos
-      const merged = patch;
-      deepMergeInto(merged, pendingPatch);
-      pendingPatch = merged;
+      pendingPatch = mergePatchInto(patch, pendingPatch);
       showConnBanner(true);
       clearTimeout(saveTimer);
       saveTimer = setTimeout(flushSave, 5000);
@@ -891,7 +918,7 @@ function migrateEncargadosToMultiCurso(){
     });
     changed = true;
   }
-  if(changed) queueSave({encargados, encargadoAttendance});
+  if(changed) queueSave({...listOps('encargados', 'update', encargados), encargadoAttendance});
 }
 
 function seedInitialRoster(){
@@ -955,7 +982,7 @@ function showToast(msg){
   window.__toastTimer = setTimeout(()=>t.classList.remove('show'), 2600);
 }
 function escapeHtml(str){
-  return (str||'').replace(/[&<>"']/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+  return String(str ?? '').replace(/[&<>"']/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 }
 
 /* ============================ NAV ============================ */
@@ -1045,7 +1072,7 @@ function viewDashboard(){
         <h3>Asistencia de hoy</h3>
         ${attToday.map(a=>`
           <div class="panel-row">
-            <span>${a.curso}</span>
+            <span>${escapeHtml(a.curso)}</span>
             ${a.taken
               ? `<span class="badge badge-verde">${a.presentes}/${a.total} presentes</span>`
               : `<span class="badge" style="background:var(--crema-2); color:var(--carbon-suave);">Sin registrar</span>`}
@@ -1055,8 +1082,8 @@ function viewDashboard(){
         <h3>Pagos pendientes este mes</h3>
         ${pendientesList.length ? pendientesList.map(s=>`
           <div class="panel-row">
-            <span>${fullName(s)}</span>
-            <span class="badge badge-ambar">${s.curso}</span>
+            <span>${escapeHtml(fullName(s))}</span>
+            <span class="badge badge-ambar">${escapeHtml(s.curso)}</span>
           </div>`).join('') : `<div class="panel-row" style="color:var(--carbon-suave)">No hay pagos pendientes 🎉</div>`}
       </div>
     </div>
@@ -1091,14 +1118,14 @@ function viewCursos(){
         const list = students.filter(s=>s.curso===c);
         const encList = encargados.filter(e=>e.cursos.includes(c));
         const encLabel = encList.length===0 ? 'Sin encargado asignado'
-          : encList.length===1 ? `Encargado: ${encList[0].nombre}`
+          : encList.length===1 ? `Encargado: ${escapeHtml(encList[0].nombre)}`
           : `${encList.length} encargados asignados`;
         return `
         <div class="curso-card">
-          <button class="icon-btn curso-remove-btn" data-remove-curso="${c}" title="Quitar curso">${ICONS.trashSm}</button>
-          <div class="curso-shield" data-open-curso="${c}" style="cursor:pointer;">${ICONS.ball}</div>
-          <div class="curso-body" data-open-curso="${c}" style="cursor:pointer;">
-            <div class="cname">${c}</div>
+          <button class="icon-btn curso-remove-btn" data-remove-curso="${escapeHtml(c)}" title="Quitar curso">${ICONS.trashSm}</button>
+          <div class="curso-shield" data-open-curso="${escapeHtml(c)}" style="cursor:pointer;">${ICONS.ball}</div>
+          <div class="curso-body" data-open-curso="${escapeHtml(c)}" style="cursor:pointer;">
+            <div class="cname">${escapeHtml(c)}</div>
             <div class="cmeta">${encLabel}</div>
             <div class="clabel">Alumnos inscritos</div>
             <div class="ccount">${list.length}</div>
@@ -1139,25 +1166,25 @@ function viewAlumnos(){
       <div class="search-wrap">${ICONS.search}<input type="text" id="searchInput" placeholder="Buscar alumno..." value="${escapeHtml(state.search)}"></div>
       <select id="cursoFilterSelect">
         <option value="all" ${state.cursoFilter==='all'?'selected':''}>Todos los cursos</option>
-        ${CURSOS.map(c=>`<option value="${c}" ${state.cursoFilter===c?'selected':''}>${c}</option>`).join('')}
+        ${CURSOS.map(c=>`<option value="${escapeHtml(c)}" ${state.cursoFilter===c?'selected':''}>${escapeHtml(c)}</option>`).join('')}
       </select>
     </div>
 
     <div class="student-list">
       ${list.length ? list.map(s=>{
         const sm = statusMeta(getPago(s.id, currentMonthKey()).estado);
-        const becaTag = s.becaPorcentaje ? ` · beca ${s.becaPorcentaje}%` : '';
+        const becaTag = s.becaPorcentaje ? ` · beca ${escapeHtml(s.becaPorcentaje)}%` : '';
         return `
-        <div class="student-row" data-student="${s.id}">
-          <div class="jersey">${initials(s)}</div>
+        <div class="student-row" data-student="${escapeHtml(s.id)}">
+          <div class="jersey">${escapeHtml(initials(s))}</div>
           <div>
-            <div class="sname">${fullName(s)}</div>
-            <div class="smeta">${s.edad} años · ${fmtMoney(s.montoMensual)}/mes${becaTag}</div>
+            <div class="sname">${escapeHtml(fullName(s))}</div>
+            <div class="smeta">${escapeHtml(s.edad)} años · ${fmtMoney(s.montoMensual)}/mes${becaTag}</div>
           </div>
           <div class="sright">
-            <span class="curso-tag">${s.curso}</span>
+            <span class="curso-tag">${escapeHtml(s.curso)}</span>
             <span class="badge ${sm.cls}">${sm.label}</span>
-            <button class="icon-btn" data-quick-delete="${s.id}" title="Quitar alumno">${ICONS.trashSm}</button>
+            <button class="icon-btn" data-quick-delete="${escapeHtml(s.id)}" title="Quitar alumno">${ICONS.trashSm}</button>
           </div>
         </div>`;
       }).join('') : (students.length===0 ? `
@@ -1194,7 +1221,7 @@ function viewAsistencia(){
 
     <div class="att-toolbar">
       <select id="attCursoSelect">
-        ${CURSOS.map(c=>`<option value="${c}" ${state.attCurso===c?'selected':''}>${c}</option>`).join('')}
+        ${CURSOS.map(c=>`<option value="${escapeHtml(c)}" ${state.attCurso===c?'selected':''}>${escapeHtml(c)}</option>`).join('')}
       </select>
       <input type="date" id="attDateInput" value="${state.attDate}">
     </div>
@@ -1210,14 +1237,14 @@ function viewAsistencia(){
         const val = rec[s.id];
         return `
         <div class="att-row">
-          <div class="jersey">${initials(s)}</div>
+          <div class="jersey">${escapeHtml(initials(s))}</div>
           <div>
-            <div class="sname">${fullName(s)}</div>
-            <div class="smeta">${s.edad} años</div>
+            <div class="sname">${escapeHtml(fullName(s))}</div>
+            <div class="smeta">${escapeHtml(s.edad)} años</div>
           </div>
           <div class="att-toggle">
-            <button class="toggle-btn present ${val===true?'active':''}" data-att="${s.id}" data-val="true">Presente</button>
-            <button class="toggle-btn absent ${val===false?'active':''}" data-att="${s.id}" data-val="false">Ausente</button>
+            <button class="toggle-btn present ${val===true?'active':''}" data-att="${escapeHtml(s.id)}" data-val="true">Presente</button>
+            <button class="toggle-btn absent ${val===false?'active':''}" data-att="${escapeHtml(s.id)}" data-val="false">Ausente</button>
           </div>
         </div>`;
       }).join('') : `<div class="empty-state">${ICONS.empty}<div class="et">Este curso no tiene alumnos</div></div>`}
@@ -1246,7 +1273,7 @@ function viewEncargados(){
       <div class="enc-group">
         <div class="enc-group-head">
           <div>
-            <div class="gname">${c}</div>
+            <div class="gname">${escapeHtml(c)}</div>
             <div class="gcount">${list.length} encargado${list.length!==1?'s':''}</div>
           </div>
         </div>
@@ -1256,15 +1283,15 @@ function viewEncargados(){
             const val = encargadoAttendance[attKey];
             return `
             <div class="att-row">
-              <div class="jersey" data-edit-encargado="${enc.id}" style="cursor:pointer;">${enc.nombre.trim().split(' ').filter(Boolean).slice(-1)[0][0].toUpperCase()}</div>
-              <div data-edit-encargado="${enc.id}" style="cursor:pointer;">
+              <div class="jersey" data-edit-encargado="${escapeHtml(enc.id)}" style="cursor:pointer;">${escapeHtml(enc.nombre.trim().split(' ').filter(Boolean).slice(-1)[0][0].toUpperCase())}</div>
+              <div data-edit-encargado="${escapeHtml(enc.id)}" style="cursor:pointer;">
                 <div class="sname">${escapeHtml(enc.nombre)}</div>
-                <div class="smeta">${enc.cursos.length>1 ? 'También en: '+enc.cursos.filter(x=>x!==c).join(', ') : c}</div>
+                <div class="smeta">${escapeHtml(enc.cursos.length>1 ? 'También en: '+enc.cursos.filter(x=>x!==c).join(', ') : c)}</div>
               </div>
               <div class="att-toggle">
-                <button class="toggle-btn present ${val===true?'active':''}" data-encatt="${enc.id}" data-enccurso="${c}" data-val="true">Presente</button>
-                <button class="toggle-btn absent ${val===false?'active':''}" data-encatt="${enc.id}" data-enccurso="${c}" data-val="false">Ausente</button>
-                <button class="icon-btn" data-edit-encargado="${enc.id}" title="Editar encargado">${ICONS.pencil}</button>
+                <button class="toggle-btn present ${val===true?'active':''}" data-encatt="${escapeHtml(enc.id)}" data-enccurso="${escapeHtml(c)}" data-val="true">Presente</button>
+                <button class="toggle-btn absent ${val===false?'active':''}" data-encatt="${escapeHtml(enc.id)}" data-enccurso="${escapeHtml(c)}" data-val="false">Ausente</button>
+                <button class="icon-btn" data-edit-encargado="${escapeHtml(enc.id)}" title="Editar encargado">${ICONS.pencil}</button>
               </div>
             </div>`;
           }).join('')}
@@ -1296,7 +1323,7 @@ function viewPagos(){
       <input type="month" id="pagosMonthInput" value="${mk}">
       <select id="pagosCursoSelect">
         <option value="all" ${state.pagosCursoFilter==='all'?'selected':''}>Todos los cursos</option>
-        ${CURSOS.map(c=>`<option value="${c}" ${state.pagosCursoFilter===c?'selected':''}>${c}</option>`).join('')}
+        ${CURSOS.map(c=>`<option value="${escapeHtml(c)}" ${state.pagosCursoFilter===c?'selected':''}>${escapeHtml(c)}</option>`).join('')}
       </select>
     </div>
 
@@ -1311,29 +1338,29 @@ function viewPagos(){
         const p = getPago(s.id, mk);
         const sm = statusMeta(p.estado);
         return `
-        <div class="pago-row-wrap" data-pago-wrap="${s.id}">
+        <div class="pago-row-wrap" data-pago-wrap="${escapeHtml(s.id)}">
           <div class="pago-row">
-            <div class="jersey">${initials(s)}</div>
+            <div class="jersey">${escapeHtml(initials(s))}</div>
             <div>
-              <div class="sname">${fullName(s)}</div>
-              <div class="smeta">${s.curso} · ${fmtMoney(s.montoMensual)}/mes</div>
+              <div class="sname">${escapeHtml(fullName(s))}</div>
+              <div class="smeta">${escapeHtml(s.curso)} · ${fmtMoney(s.montoMensual)}/mes</div>
             </div>
             <div class="sright">
               <span class="badge ${sm.cls}">${sm.label}</span>
               <div class="att-toggle">
-                <button class="toggle-btn present ${p.estado==='al_dia'?'active':''}" data-pago="${s.id}" data-val="al_dia">Al día</button>
-                <button class="toggle-btn absent ${p.estado==='pendiente'?'active':''}" data-pago="${s.id}" data-val="pendiente">Pendiente</button>
-                <button class="toggle-btn ${p.estado==='congelado'?'active':''}" style="${p.estado==='congelado'?'background:var(--hielo-suave); border-color:var(--hielo); color:var(--hielo);':''}" data-pago="${s.id}" data-val="congelado">Congelar</button>
+                <button class="toggle-btn present ${p.estado==='al_dia'?'active':''}" data-pago="${escapeHtml(s.id)}" data-val="al_dia">Al día</button>
+                <button class="toggle-btn absent ${p.estado==='pendiente'?'active':''}" data-pago="${escapeHtml(s.id)}" data-val="pendiente">Pendiente</button>
+                <button class="toggle-btn ${p.estado==='congelado'?'active':''}" style="${p.estado==='congelado'?'background:var(--hielo-suave); border-color:var(--hielo); color:var(--hielo);':''}" data-pago="${escapeHtml(s.id)}" data-val="congelado">Congelar</button>
               </div>
             </div>
           </div>
-          <div class="pago-detail ${p.estado!=='pendiente'?'show':''}" id="pagoDetail_${s.id}">
+          <div class="pago-detail ${p.estado!=='pendiente'?'show':''}" id="pagoDetail_${escapeHtml(s.id)}">
             ${p.estado==='al_dia' ? `
               <label>Fecha de pago</label>
-              <input type="date" data-pago-fecha="${s.id}" value="${p.fechaPago||todayISO()}">
+              <input type="date" data-pago-fecha="${escapeHtml(s.id)}" value="${escapeHtml(p.fechaPago||todayISO())}">
             ` : p.estado==='congelado' ? `
               <label>Motivo del congelamiento</label>
-              <input type="text" data-pago-motivo="${s.id}" value="${escapeHtml(p.motivo||'')}" placeholder="Ej. Lesión de tobillo - reposo médico">
+              <input type="text" data-pago-motivo="${escapeHtml(s.id)}" value="${escapeHtml(p.motivo||'')}" placeholder="Ej. Lesión de tobillo - reposo médico">
             ` : ''}
           </div>
         </div>`;
@@ -1406,7 +1433,7 @@ function viewFinanzas(){
         </div>
         ${perCurso.map(c=>`
           <div class="fin-table-row" style="border-left:4px solid ${getCursoColor(c.curso).hex};">
-            <span class="fin-curso">${c.curso}</span>
+            <span class="fin-curso">${escapeHtml(c.curso)}</span>
             <span>${c.count}</span>
             <span>${fmtMoney(c.esperado)}</span>
             <span style="color:var(--verde); font-weight:600;">${fmtMoney(c.recaudado)}</span>
@@ -1646,14 +1673,14 @@ function openStudentModal(id){
         <div class="field"><label>Apellido materno</label><input type="text" id="f_apMaterno" value="${s?escapeHtml(s.apellidoMaterno):''}" placeholder="Ej. García"></div>
       </div>
       <div class="field-row">
-        <div class="field"><label>Edad</label><input type="number" id="f_edad" min="4" max="20" value="${s?s.edad:''}"></div>
+        <div class="field"><label>Edad</label><input type="number" id="f_edad" min="4" max="20" value="${s?escapeHtml(s.edad):''}"></div>
         <div class="field"><label>Curso</label>
-          <select id="f_curso">${CURSOS.map(c=>`<option value="${c}" ${s&&s.curso===c?'selected':''}>${c}</option>`).join('')}</select>
+          <select id="f_curso">${CURSOS.map(c=>`<option value="${escapeHtml(c)}" ${s&&s.curso===c?'selected':''}>${escapeHtml(c)}</option>`).join('')}</select>
         </div>
       </div>
       <div class="field-row">
-        <div class="field"><label>Monto mensual (Bs)</label><input type="number" id="f_monto" min="0" step="1" value="${s?s.montoMensual:''}" placeholder="Ej. 150"></div>
-        <div class="field"><label>Beca (%) — opcional</label><input type="number" id="f_beca" min="0" max="100" step="1" value="${s&&s.becaPorcentaje?s.becaPorcentaje:''}" placeholder="Ej. 50"></div>
+        <div class="field"><label>Monto mensual (Bs)</label><input type="number" id="f_monto" min="0" step="1" value="${s?escapeHtml(s.montoMensual):''}" placeholder="Ej. 150"></div>
+        <div class="field"><label>Beca (%) — opcional</label><input type="number" id="f_beca" min="0" max="100" step="1" value="${s&&s.becaPorcentaje?escapeHtml(s.becaPorcentaje):''}" placeholder="Ej. 50"></div>
       </div>
       <div class="field-row">
         <div class="field"><label>Apoderado</label><input type="text" id="f_apoderado" value="${s?escapeHtml(s.apoderado||''):''}" placeholder="Nombre del padre/madre/tutor"></div>
@@ -1718,15 +1745,17 @@ function openStudentModal(id){
 
     if(s){
       Object.assign(s, {nombre, apellidoPaterno:apPaterno, apellidoMaterno:apMaterno, edad, curso, montoMensual:monto, becaPorcentaje:beca, apoderado, telefono, observaciones:obs});
+      queueSave(listOp('students', 'update', s));
       showToast('Cambios guardados');
     } else {
-      students.push({
-        id: nextId++, nombre, apellidoPaterno:apPaterno, apellidoMaterno:apMaterno, edad, curso,
+      const nuevo = {
+        id: newId(students), nombre, apellidoPaterno:apPaterno, apellidoMaterno:apMaterno, edad, curso,
         montoMensual:monto, becaPorcentaje:beca, apoderado, telefono, observaciones:obs
-      });
+      };
+      students.push(nuevo);
+      queueSave(listOp('students', 'add', nuevo));
       showToast('Alumno añadido correctamente');
     }
-    queueSave({students, nextId});
     closeStudentModal();
     render();
   });
@@ -1763,11 +1792,11 @@ function openConfirm({title, message, confirmLabel, onConfirm, icon}){
 function openConfirmDeleteStudent(s){
   openConfirm({
     title: `¿Quitar a ${escapeHtml(fullName(s))}?`,
-    message: `Esta acción eliminará al alumno de la lista de ${s.curso}. No se puede deshacer.`,
+    message: `Esta acción eliminará al alumno de la lista de ${escapeHtml(s.curso)}. No se puede deshacer.`,
     confirmLabel: 'Sí, quitar alumno',
     onConfirm: ()=>{
       students = students.filter(x=>x.id!==s.id);
-      queueSave({students});
+      queueSave(listOp('students', 'remove', s.id));
       showToast('Alumno eliminado');
       render();
     }
@@ -1777,11 +1806,11 @@ function openConfirmDeleteStudent(s){
 function openConfirmDeleteEncargado(enc){
   openConfirm({
     title: `¿Quitar a ${escapeHtml(enc.nombre)}?`,
-    message: `Dejará de estar asignado como encargado de ${enc.cursos.join(', ')}. Su historial de asistencia registrado se conservará.`,
+    message: `Dejará de estar asignado como encargado de ${escapeHtml(enc.cursos.join(', '))}. Su historial de asistencia registrado se conservará.`,
     confirmLabel: 'Sí, quitar encargado',
     onConfirm: ()=>{
       encargados = encargados.filter(x=>x.id!==enc.id);
-      queueSave({encargados});
+      queueSave(listOp('encargados', 'remove', enc.id));
       showToast('Encargado eliminado');
       render();
     }
@@ -1869,8 +1898,8 @@ function openEncargadoModal(id){
         <div class="curso-check-group">
           ${CURSOS.map(c=>{
             const checked = enc ? enc.cursos.includes(c) : false;
-            return `<label class="curso-check ${checked?'checked':''}" data-curso-check-wrap="${c}">
-              <input type="checkbox" value="${c}" ${checked?'checked':''}> ${c}
+            return `<label class="curso-check ${checked?'checked':''}" data-curso-check-wrap="${escapeHtml(c)}">
+              <input type="checkbox" value="${escapeHtml(c)}" ${checked?'checked':''}> ${escapeHtml(c)}
             </label>`;
           }).join('')}
         </div>
@@ -1913,18 +1942,19 @@ function openEncargadoModal(id){
     if(enc){
       enc.nombre = nombre;
       enc.cursos = cursosSel;
-      queueSave({encargados});
+      queueSave(listOp('encargados', 'update', enc));
       showToast('Cambios guardados');
     } else {
       // if someone with this exact name already exists, add these cursos to them instead of duplicating
       const existing = encargados.find(e=>normalizeStr(e.nombre)===normalizeStr(nombre));
       if(existing){
         existing.cursos = [...new Set([...existing.cursos, ...cursosSel])];
-        queueSave({encargados});
+        queueSave(listOp('encargados', 'update', existing));
         showToast(`${nombre} ya existía — se agregaron los cursos seleccionados`);
       } else {
-        encargados.push({id: nextEncargadoId++, nombre, cursos: cursosSel});
-        queueSave({encargados, nextEncargadoId});
+        const nuevo = {id: newId(encargados), nombre, cursos: cursosSel};
+        encargados.push(nuevo);
+        queueSave(listOp('encargados', 'add', nuevo));
         showToast('Encargado añadido correctamente');
       }
     }
@@ -2062,6 +2092,8 @@ async function importFromWorkbookFile(file){
   await workbook.xlsx.load(arrayBuffer);
 
   let added=0, updated=0;
+  const ops = []; // operaciones para el servidor (alumnos agregados / actualizados)
+  const pagosTocados = {}; // solo los pagos que cambió la importación
   const skippedSheets = [];
   const touchedCursos = new Set();
   const mk = currentMonthKey();
@@ -2083,21 +2115,26 @@ async function importFromWorkbookFile(file){
           observaciones: sd.observaciones || existing.observaciones
         });
         setPago(existing.id, mk, sd._pagoActual);
+        pagosTocados[existing.id+'|'+mk] = pagos[existing.id+'|'+mk];
+        ops.push({op:'update', item: existing});
         updated++;
       } else {
-        const id = nextId++;
-        students.push({
+        const id = newId(students);
+        const nuevo = {
           id, nombre:sd.nombre, apellidoPaterno:sd.apellidoPaterno, apellidoMaterno:sd.apellidoMaterno,
           edad:sd.edad, curso:sd.curso, montoMensual:sd.montoMensual, becaPorcentaje:0,
           apoderado:sd.apoderado, telefono:sd.telefono, observaciones:sd.observaciones
-        });
+        };
+        students.push(nuevo);
+        ops.push({op:'add', item: nuevo});
         setPago(id, mk, sd._pagoActual);
+        pagosTocados[id+'|'+mk] = pagos[id+'|'+mk];
         added++;
       }
     });
   });
 
-  return {added, updated, skippedSheets, touchedCursos:[...touchedCursos]};
+  return {added, updated, skippedSheets, touchedCursos:[...touchedCursos], ops, pagosTocados};
 }
 
 function openImportSummary({added, updated, skippedSheets}){
@@ -2367,7 +2404,7 @@ document.getElementById('importFileInput').addEventListener('change', async (e)=
   showToast('Leyendo el archivo...');
   try{
     const result = await importFromWorkbookFile(file);
-    queueSave({students, nextId, pagos});
+    queueSave({listOps: {students: result.ops}, pagos: result.pagosTocados});
     render();
     openImportSummary(result);
   } catch(err){
